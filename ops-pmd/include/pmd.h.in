@@ -1,0 +1,313 @@
+/*
+ *  (c) Copyright 2015 Hewlett Packard Enterprise Development LP
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may
+ *  not use this file except in compliance with the License. You may obtain
+ *  a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+ *  WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+ *  License for the specific language governing permissions and limitations
+ *  under the License.
+ */
+
+/************************************************************************//**
+ * @defgroup ops-pmd Pluggable Module Daemon
+ * This module is the platform daemon that processess and manages pluggable
+ * modules for all subsystems in the switch that have pluggable modules.
+ *
+ * @file
+ * Header for platform Pluggable Module daemon
+ *
+ * @defgroup pmd_public Public Interface
+ * Public API for the platform Pluggable Module daemon
+ *
+ * The platform pluggable module  daemon is responsible for managing and
+ * reporting status for pluggable modules in any subsystem that has pluggable
+ * modules.
+ *
+ * @{
+ *
+ * Public APIs
+ *
+ * Command line options:
+ *
+ *     usage: ops-pmd [OPTIONS] [DATABASE]
+ *     where DATABASE is a socket on which ovsdb-server is listening
+ *           (default: "unix:/var/run/openvswitch/db.sock").
+ *
+ *     Daemon options:
+ *          --detach                run in background as daemon
+ *          --no-chdir              do not chdir to '/'
+ *          --pidfile[=FILE]        create pidfile (default: /var/run/openvswitch/ops-pmd.pid)
+ *          --overwrite-pidfile     with --pidfile, start even if already running
+ *
+ *     Logging options:
+ *          -vSPEC, --verbose=SPEC   set logging levels
+ *          -v, --verbose            set maximum verbosity level
+ *          --log-file[=FILE]        enable logging to specified FILE
+ *                                  (default: /var/log/openvswitch/ops-pmd.log)
+ *          --syslog-target=HOST:PORT  also send syslog msgs to HOST:PORT via UDP
+ *
+ *     Other options:
+ *          --unixctl=SOCKET        override default control socket name
+ *          -h, --help              display this help message
+ *          -V, --version           display version information
+ *
+ *
+ * ovs-apptcl options:
+ *
+ *      Support dump: ovs-appctl -t ops-pmd ops-pmd/dump [interface [name]]
+ *
+ *
+ * OVSDB elements usage
+ *
+ *     Creation: The following rows/cols are created by ops-pmd
+ *               n/a
+ *
+ *     Written: The following cols are written by ops-pmd
+ *              Interface:pm_info
+ *              daemon["ops-pmd"]:cur_hw
+ *
+ *     Read: The following cols are read by ops-pmd
+ *           Interface:name
+ *           Interface:hw_intf_config
+ *           subsystem:name
+ *
+ * Linux Files:
+ *
+ *     The following files are written by ops-pmd
+ *           /var/run/openvswitch/ops-pmd.pid: Process ID for the pluggable module daemon
+ *           /var/run/openvswitch/ops-pmd.<pid>.ctl: unixctl socket for the pluggable module daemon
+ *
+ * @}
+ ***************************************************************************/
+
+#ifndef _PMD_H_
+#define _PMD_H_
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include <openvswitch/vlog.h>
+#include <uuid.h>
+#include <dynamic-string.h>
+
+#include "config-yaml.h"
+
+#include "pm_dom.h"
+
+#cmakedefine PLATFORM_SIMULATION
+
+#define STATIC static
+
+#define PM_INTERVAL 500             // 0.5 seconds, in msecs
+#define PM_INTERVAL_SIMULATION 100  // 0.1 seconds, in msecs
+
+#define PM_SFP_A2_PAGE_SIZE     128
+#define PM_SFP_A2_I2C_ADDRESS   0x51
+
+#define MODULE_TYPE_SFP_PLUS    1
+#define MODULE_TYPE_QSFP_PLUS   2
+#define MODULE_TYPE_QSFP28      3
+
+#define CONNECTOR_SFP_PLUS      "SFP_PLUS"
+#define CONNECTOR_QSFP_PLUS     "QSFP_PLUS"
+#define CONNECTOR_QSFP28        "QSFP28"
+
+#define MAX_SPLIT_COUNT       4
+
+struct ovs_module_info {
+    /* cable_length column.
+       Length of the cable. NOTE: Only applicable to transceiver with
+       built in cable or the maximum cable length for a transceiver
+       restricted by length. */
+    char    *cable_length;
+
+    /* cable_technology column.
+       Technology of the cable. NOTE: Only applicable to copper cables. */
+    char    *cable_technology;
+
+    /* connector column.
+       Type of connector plugged into the socket. */
+    char    *connector;
+
+    /* connector_status column.
+       Status of the connector to indicate whether it is supported by
+       the h/w platform. */
+    char    *connector_status;
+
+    /* supported_speeds column.
+       List of support speeds. */
+    char    *supported_speeds;
+
+    /* Maximum speed supported by the transceiver, in units of megabits.*/
+    char    *max_speed;
+
+    /* power_mode column.
+       Power mode for pluggable module, i.e. 'low' or 'high'.
+       Typically for QSFP only. */
+    char    *power_mode;
+
+    /*  Vendor name on the module. */
+    char    *vendor_name;
+    /* Vendor Organizationally Unique Identifier (OUI) on the module. */
+    char    *vendor_oui;
+    /* Vendor part number on the module. */
+    char    *vendor_part_number;
+    /* Vendor revision for the module. */
+   char     *vendor_revision;
+    /* Vendor serial number for the module. */
+    char    *vendor_serial_number;
+    /* a0 page.
+       Raw serial ID page for SFPs. Raw lower page for QSFPs.
+       The raw binary data is stored as ASCII characters with space
+       character separating 4 byte words.*/
+    char    *a0;
+    /* a0_uppers[]:
+       Raw upper pages for QSFPs. Indexed by page number.
+       NOTE: Not applicable to SFPs.
+       The raw binary data is stored as ASCII characters with space
+       character separating 4 byte words.*/
+    char    *a0_uppers;
+    /* a2 page.
+       Raw diagnostic page for SFPs. NOTE: Not applicable to QSFPs.
+       The raw binary data is stored as ASCII characters with space
+       character separating 4 byte words.*/
+    char    *a2;
+
+}; /* struct ovs_module_info */
+
+typedef struct {
+    char    *instance;                /* 'name' of interface that maps to
+                                         'name' of port in ports.yaml file. */
+    struct uuid uuid;                 /* ovsdb uuid associated with this
+                                         instance of pm_port_t. Used for
+                                         detection of deleted entries in
+                                         ovsdb.
+                                         OPS_TODO: use ovs map constructs
+                                         instead. */
+    const YamlPort  *module_device;   /* port info parsed from yaml file */
+    char *subsystem;
+    struct ovs_module_info ovs_module_columns; /* pluggable module data in a
+                                                  form suitable for ovsrec
+                                                  update */
+    struct ovs_module_dom_info ovs_module_dom_columns;
+    bool    module_info_changed;         /* indicates db update is needed */
+    bool    hw_enable;
+    bool    hw_enable_subport[MAX_SPLIT_COUNT];
+    bool    present;
+    bool    retry;
+    bool    a2_read_requested;
+    bool    split;
+    bool    optical;
+#ifdef PLATFORM_SIMULATION
+    const unsigned char *   module_data;
+    char    port_enable;
+#endif
+} pm_port_t;
+
+// macros to manage changes to pluggable module data in ovsrec.
+// Set static string constant.
+#define SET_STATIC_STRING(port, field, value) \
+        port->ovs_module_columns.field = value;    \
+        port->module_info_changed = true;
+
+// Set string pointer using dynamically allocated memory.
+#define SET_STRING(port, field, value) \
+    if (NULL == (port->ovs_module_columns.field) || \
+        strlen(port->ovs_module_columns.field) != strlen(value) || \
+        strcmp(port->ovs_module_columns.field, value) != 0) { \
+        free(port->ovs_module_columns.field); \
+        port->ovs_module_columns.field = strdup(value);    \
+        port->module_info_changed = true;    \
+    }
+
+// Set string pointer converting integer to a string.
+#define SET_INT_STRING(port, field, value) \
+    if (NULL == (port->ovs_module_columns.field) || \
+        strtol(port->ovs_module_columns.field, NULL, 0) != value) { \
+        free(port->ovs_module_columns.field); \
+        asprintf(&port->ovs_module_columns.field, "%d", value); \
+        port->module_info_changed = true;    \
+    }
+
+// Set string pointer converting float to a string.
+#define SET_FLOAT_STRING(port, field, value) \
+    if (NULL == (port->ovs_module_dom_columns.field) || \
+        strtol(port->ovs_module_dom_columns.field, NULL, 0) != value) { \
+        free(port->ovs_module_dom_columns.field); \
+        asprintf(&port->ovs_module_dom_columns.field, "%4.2f", value); \
+        port->module_info_changed = true;    \
+    }
+
+#define SET_FLAG_STRING(port, field, value) \
+    if (NULL == (port->ovs_module_dom_columns.field) || \
+        strlen(port->ovs_module_dom_columns.field) != strlen(value) || \
+        strcmp(port->ovs_module_dom_columns.field, value) != 0) { \
+        free(port->ovs_module_dom_columns.field); \
+        port->ovs_module_dom_columns.field = strdup(value);    \
+        port->module_info_changed = true;    \
+    }
+
+#define SET_BOOL_STRING(port, field, value) \
+    if (value) { \
+        SET_FLAG_STRING(port, field, "On") } \
+    else { \
+        SET_FLAG_STRING(port, field, "Off") }
+
+#define SET_BINARY(port, field, value, size) \
+    do { \
+        free(port->ovs_module_columns.field); \
+        port->ovs_module_columns.field = hex_to_ascii(value, size); \
+        port->module_info_changed = true;                           \
+    } while(0);
+
+// macro to delete attributes
+#define DELETE(port, field) \
+    if (NULL != (port->ovs_module_columns.field)) { \
+        port->ovs_module_columns.field = NULL; \
+        port->module_info_changed = true;      \
+    }
+
+#define DELETE_FREE(port, field) \
+    if (NULL != (port->ovs_module_columns.field)) { \
+        free(port->ovs_module_columns.field);       \
+        port->ovs_module_columns.field = NULL; \
+        port->module_info_changed = true;      \
+    }
+
+// YAML config file method
+int pm_read_yaml_files(const struct ovsrec_subsystem *subsys);
+
+// DB access methods
+int pm_port_subscribe(void);
+int pm_update_port(void);
+
+int pm_cleanup(void);
+// allocate missing data structures
+int pm_allocate(void);
+
+// PM access methods
+int pm_read_state(void);
+int pm_set_enabled(void);
+
+extern const YamlPort *pm_get_yaml_port(const char *subsystem, const char *instance);
+
+extern void pm_update_port_modules(void);
+extern void pm_configure_port(pm_port_t *port);
+extern void pm_clear_reset(pm_port_t *port);
+extern void pm_delete_all_data(pm_port_t *port);
+
+extern int pm_ovsdb_if_init(const char *remote);
+extern void pm_ovsdb_update(void);
+extern void pm_debug_dump(struct ds *ds, int argc, const char *argv[]);
+
+extern char *hex_to_ascii(char *buf, int buf_size);
+
+extern void pm_config_init(void);
+
+#endif
